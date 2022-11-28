@@ -1,0 +1,141 @@
+#!/bin/sh -e
+#L:
+#L:  MIT License
+#L:  
+#l:  Bug reports, feature requests to gemini|https://harkadev.com/oss
+#l:  Copyright (c) 2022 Harkaitz Agirre, harkaitz.aguirre@gmail.com
+#L:
+#L:  Permission is hereby granted, free of charge, to any person obtaining
+#L:  a copy of this software and associated documentation files (the
+#L:  "Software"), to deal in the Software without restriction, including
+#L:  without limitation the rights to use, copy, modify, merge, publish,
+#L:  distribute, sublicense, and/or sell copies of the Software, and to
+#L:  permit persons to whom the Software is furnished to do so, subject to
+#L:  the following conditions:
+#L:
+#L:  The above copyright notice and this permission notice shall be
+#L:  included in all copies or substantial portions of the Software.
+#L:
+#L:  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+#L:  EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+#L:  MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+#L:  NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+#L:  LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+#L:  OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+#L:  WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+##:
+#h: Usage: $0 [OPTS...] COMMAND...
+#h:
+#h: Run a command/script in the background.
+#h:
+#h:     -V      : Show configuration.
+#h:     -m      : Send result by mail in case of error.
+#h:     -t NAME : Task name.
+#h:     -i      : Install a link in `/sbin/taskrun`.
+##:
+if test ! -n "${HPROFILE_VARS}" && test -e /etc/hprofile; then
+    . /etc/hprofile
+fi
+taskrun() (
+    o_mail_on_error=''
+    o_task_name=''
+    o_install_link=''
+    ## Parse command line arguments.
+    while getopts "Vmt:i" optopt; do
+        case $optopt in
+            V)  taskrun_show_variables; return 0;;
+            m)  o_mail_on_error='y'    ;;
+            t)  o_task_name="$OPTARG"  ;;
+            i)  o_install_link='y'     ;;
+            \?) return 1;;
+        esac
+    done
+    shift $(( $OPTIND - 1 ))
+
+    ## Install links.
+    if test @"$o_install_link" = @"y"; then
+        sudo rm -v -f "/sbin/taskrun"
+        sudo ln -v -s "$0" "/sbin/taskrun"
+        return 0
+    fi
+
+    
+    ## Check arguments.
+    if test ! -n "$1"; then
+        error "Please specify a command."
+        return 1
+    elif test @"$o_mail_on_error" = @"y" && test ! -n "$EMAIL"; then
+        error "Please set EMAIL environment variable."
+        return 1
+    fi
+
+    
+    ## Get task name and from it the log file.
+    if test ! -n "$o_task_name"; then
+        o_task_name="`basename "$1"`"
+    fi
+    logfile="$LOGDIR_TASKS/`date +%Y-%m-%d`--$o_task_name.log"
+
+    
+    ## Execute the program.
+    mkdir -p "$LOGDIR_TASKS"
+    echo "$* > $logfile 2>&1 </dev/null"
+    if env "$@" > "$logfile" 2>&1 </dev/null; then
+        echo "Success"
+        echo "== SUCCESS ==" >> "$logfile"
+        result=success
+    else
+        echo "Error"
+        echo "== ERROR ==" >> "$logfile"
+        result=error
+    fi
+
+    
+    ## Send mail in case of error.
+    if test @"$result" = @"error" && test @"$o_mail_on_error" = @"y"
+    then
+        echo "Sending mail to $EMAIL ..."
+        msmtp -t <<-EOF
+	To: $EMAIL
+	Subject: Task '$o_task_name' failed.
+	Content-Type: text/html
+	
+	<pre>
+	`cat "$logfile"`
+	</pre>
+	EOF
+    fi
+)
+taskrun_show_variables() {
+    cat <<-EOF
+	EMAIL        : $EMAIL
+	LOGDIR_TASKS : $LOGDIR_TASKS
+	EOF
+}
+taskrun_calc_variables() {
+    case "`whoami`" in
+        root) LOGDIR_TASKS="${LOGDIR_TASKS:-/root/.tasklog}";;
+        *)    LOGDIR_TASKS="${LOGDIR_TASKS:-/home/`whoami`/.tasklog}";;
+    esac
+}
+## -------------------------------------------------------------------
+
+
+
+
+## -------------------------------------------------------------------
+error() { echo "$SCRNAME: $*" >&2; }
+taskrun_calc_variables
+SCRNAME="`basename "$0"`"
+if test @"${SCRNAME}" = @"taskrun";then
+    case "${1}" in
+        ''|-h|--help)
+            sed -n 's/^ *#h: \{0,1\}//p' "$0" | sed "s|\\\$0|${SCRNAME}|g"
+            echo ""
+            sed -n 's/^ *#l: \{0,2\}//p' "$0"
+            ;;
+        *)
+            taskrun "$@"
+            ;;
+    esac
+fi
